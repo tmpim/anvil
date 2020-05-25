@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"math"
 	"reflect"
-	"strconv"
+
+	"github.com/klauspost/compress/gzip"
+	"github.com/tmpim/anvil"
 )
 
 var (
@@ -18,24 +22,6 @@ var (
 	ErrNotIndexed            = errors.New("nbt: indexing is required before calling this method")
 )
 
-type TagID byte
-
-const (
-	TagEnd = TagID(iota)
-	TagByte
-	TagShort
-	TagInt
-	TagLong
-	TagFloat
-	TagDouble
-	TagByteArray
-	TagString
-	TagList
-	TagCompound
-	TagIntArray
-	TagLongArray
-)
-
 type Reader struct {
 	data   []byte
 	cursor int
@@ -43,45 +29,29 @@ type Reader struct {
 	// index []*IndexEntry
 }
 
-type IndexEntry struct {
-	Parent    int
-	Children  []int
-	Header    TagHeader
-	ListIndex int
-}
-
-type TagHeader struct {
-	TagID TagID
-	Name  []byte
-}
-
-func (t *TagHeader) Length() int {
-	return 3 + len(t.Name)
-}
-
-type Breadcrumb struct {
-	*IndexEntry
-	Reader Reader
-}
-
-type Breadcrumbs []Breadcrumb
-
-func (b Breadcrumbs) String() string {
-	var result []byte
-
-	for i := len(b) - 1; i >= 0; i-- {
-		crumb := b[i]
-		if crumb.ListIndex >= 0 {
-			result = append(result, []byte("["+strconv.Itoa(crumb.ListIndex)+"]")...)
-		} else {
-			if i != len(b)-1 {
-				result = append(result, '.')
-			}
-			result = append(result, crumb.Header.Name...)
-		}
+func NewGzipReader(rd io.Reader) (Reader, error) {
+	rd, err := gzip.NewReader(rd)
+	if err != nil {
+		return Reader{}, err
+	}
+	data, err := ioutil.ReadAll(rd)
+	if err != nil {
+		return Reader{}, err
 	}
 
-	return string(result)
+	return Reader{
+		data:   data,
+		cursor: 0,
+	}, nil
+}
+
+func NewRegionChunkReader(c *anvil.ChunkData) (Reader, error) {
+	data, err := c.Decompress()
+	if err != nil {
+		return Reader{}, err
+	}
+
+	return NewReader(data), nil
 }
 
 // NewReader creates a new NBT reader. We use raw byte arrays for performance
@@ -126,6 +96,24 @@ func (r *Reader) SeekTo(pos int) {
 	r.cursor = pos
 }
 
+// AlignToIndex seeks up until the cursor is aligned to a valid index entry.
+// Returns nil if there is no index, or if it hits the start of the chunk data
+// without finding any valid index entries.
+func (r *Reader) AlignToIndex() *IndexEntry {
+	if r.Index == nil {
+		return nil
+	}
+
+	for i := r.cursor; i >= 0; i-- {
+		if ent, found := r.Index[i]; found {
+			r.SeekTo(i)
+			return ent
+		}
+	}
+
+	return nil
+}
+
 // SeekToAndRead seeks to the given name and a tag ID matching the type of `value`
 // and reads it into `value`. SeekToAndRead will stop if it reaches the end of
 // the current compound, it will leave the cursor pointing to the next header after TagEnd
@@ -158,196 +146,6 @@ func (r *Reader) SeekTo(pos int) {
 // func (r *Reader) RecurSeekToMatchingCompound(names []string, matcher interface{}) ([]Breadcrumb, int) {
 
 // }
-
-type SelectiveIndex []TagHeader
-
-func (s SelectiveIndex) Matches(header TagHeader) bool {
-	for _, selection := range s {
-		if header.TagID == selection.TagID && bytes.Equal(header.Name, selection.Name) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (r *Reader) PrepareIndex(selectiveIndex SelectiveIndex) (err error) {
-	if r.Index != nil {
-		return nil
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("nbt: panic preparing index: %v", r)
-		}
-	}()
-
-	r.Index = make(map[int]*IndexEntry)
-
-	savedCursor := r.cursor
-
-	r.Index[0] = &IndexEntry{
-		Parent:    -1,
-		ListIndex: -1,
-		Header: TagHeader{
-			TagID: TagEnd,
-			Name:  []byte("root"),
-		},
-	}
-
-	err = r.indexCompound(0, false, selectiveIndex)
-	r.cursor = savedCursor
-	if err != nil {
-		return fmt.Errorf("nbt: error preparing index: %w", err)
-	}
-	return err
-}
-
-func (r *Reader) indexCompound(parent int, index bool, selectiveIndex SelectiveIndex) error {
-	var par *IndexEntry
-	if index {
-		par = r.Index[parent]
-	}
-
-	for {
-		header, _, err := r.ReadTagHeader()
-		if err == io.EOF {
-			return nil
-		}
-
-		if err != nil {
-			return fmt.Errorf("error reading tag header at position %d: %w", r.cursor, err)
-		}
-
-		shouldIndex := index
-
-		if !shouldIndex {
-			shouldIndex = selectiveIndex.Matches(header)
-		}
-
-		if shouldIndex {
-			if par != nil {
-				r.Index[r.cursor] = &IndexEntry{
-					ListIndex: -1,
-					Parent:    parent,
-					Header:    header,
-				}
-				par.Children = append(par.Children, r.cursor)
-			} else {
-				r.Index[r.cursor] = &IndexEntry{
-					ListIndex: -1,
-					Parent:    -1,
-					Header:    header,
-				}
-			}
-		}
-
-		switch header.TagID {
-		case TagEnd:
-			return nil
-		case TagCompound:
-			if err := r.indexCompound(r.cursor, shouldIndex, selectiveIndex); err != nil {
-				return err
-			}
-		case TagList:
-			if err := r.indexList(r.cursor, shouldIndex, selectiveIndex); err != nil {
-				return err
-			}
-		default:
-			r.SkipTag(header.TagID)
-		}
-	}
-}
-
-func (r *Reader) indexList(parent int, index bool, selectiveIndex SelectiveIndex) error {
-	tagID, length, unread := r.ReadListTagHeader()
-	if tagID != TagCompound && tagID != TagList {
-		r.Unread(unread)
-		r.SkipTag(TagList)
-		return nil
-	}
-
-	var par *IndexEntry
-	if index {
-		par = r.Index[parent]
-	}
-
-	if tagID == TagCompound {
-		for i := 0; i < length; i++ {
-			if index {
-				r.Index[r.cursor] = &IndexEntry{
-					ListIndex: i,
-					Parent:    parent,
-					Header: TagHeader{
-						TagID: tagID,
-						Name:  nil,
-					},
-				}
-				par.Children = append(par.Children, r.cursor)
-			}
-
-			if err := r.indexCompound(r.cursor, index, selectiveIndex); err != nil {
-				return err
-			}
-		}
-	} else if tagID == TagList {
-		for i := 0; i < length; i++ {
-			if index {
-				r.Index[r.cursor] = &IndexEntry{
-					ListIndex: i,
-					Parent:    parent,
-					Header: TagHeader{
-						TagID: tagID,
-						Name:  nil,
-					},
-				}
-				par.Children = append(par.Children, r.cursor)
-			}
-
-			if err := r.indexList(r.cursor, index, selectiveIndex); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// Verifies and computes the breadcrumb to get to the current location.
-func (r *Reader) Breadcrumbs() (Breadcrumbs, error) {
-	if r.Index == nil {
-		return nil, ErrNotIndexed
-	}
-
-	var results Breadcrumbs
-
-	pos := r.cursor
-
-	for {
-
-		meta, found := r.Index[pos]
-		if !found {
-			if pos == r.cursor {
-				return nil, ErrInvalidHeaderLocation
-			}
-
-			return nil, ErrIndexCorrupt
-		}
-
-		results = append(results, Breadcrumb{
-			Reader:     r.Copy(pos),
-			IndexEntry: meta,
-		})
-
-		pos = meta.Parent
-
-		if pos < 0 {
-			break
-		}
-	}
-
-	return results, nil
-}
 
 func (r *Reader) VerifyTagHeader() error {
 	if r.Index == nil {
@@ -586,7 +384,7 @@ func (r *Reader) ReadImmediate(tagID TagID, value interface{}) (int, error) {
 			return unread, fmt.Errorf("%w pointer to slice", ErrInvalidType)
 		}
 
-		result := reflect.MakeSlice(rv.Elem().Type().Elem(), length, 0)
+		result := reflect.MakeSlice(rv.Elem().Type(), length, length)
 
 		for i := 0; i < length; i++ {
 			elemUnread, err := r.ReadImmediate(tagID, result.Index(i).Addr().Interface())
@@ -595,6 +393,8 @@ func (r *Reader) ReadImmediate(tagID TagID, value interface{}) (int, error) {
 				return unread, err
 			}
 		}
+
+		rv.Elem().Set(result)
 
 		return unread, nil
 	case TagCompound:
@@ -647,6 +447,36 @@ func (r *Reader) readInt64() uint64 {
 	return num
 }
 
+func (r *Reader) SimpleMatch(pattern []byte, count int) []int {
+	prevCursor := r.cursor
+	defer func() {
+		r.cursor = prevCursor
+	}()
+
+	r.cursor = 0
+	total := 0
+
+	var results []int
+
+	for {
+		nextPos := bytes.Index(r.data[r.cursor:], pattern)
+		if nextPos < 0 {
+			break
+		}
+
+		r.cursor += nextPos + 1
+		total++
+
+		results = append(results, r.cursor-1)
+
+		if total > 0 && total >= count {
+			break
+		}
+	}
+
+	return results
+}
+
 // Only returns 1 result!!! if there are multiple possible results
 // it only returns on possible candidate, it is not guaranteed to be correct!!
 func (r *Reader) PossibleTagMatch(patterns [][][]byte) (bool, error) {
@@ -676,7 +506,7 @@ func (r *Reader) PossibleTagMatch(patterns [][][]byte) (bool, error) {
 	return true, nil
 }
 
-func (r *Reader) MatchTags(headerGroup [][]byte) ([]Breadcrumbs, error) {
+func (r *Reader) MatchTags(headerGroup [][]byte) ([]*IndexEntry, error) {
 	if r.Index == nil {
 		return nil, ErrNotIndexed
 	}
@@ -687,7 +517,7 @@ func (r *Reader) MatchTags(headerGroup [][]byte) ([]Breadcrumbs, error) {
 	}()
 
 	r.cursor = 0
-	var results []Breadcrumbs
+	var results []*IndexEntry
 
 	for {
 		nextPos := bytes.Index(r.data[r.cursor:], headerGroup[0])
@@ -705,10 +535,11 @@ func (r *Reader) MatchTags(headerGroup [][]byte) ([]Breadcrumbs, error) {
 
 		meta, found := r.Index[r.cursor]
 		if !found {
+			log.Println("warning: matching tag not in index:", r.cursor)
 			continue
 		}
 
-		if meta.Parent < 0 {
+		if meta.Parent == nil {
 			return nil, ErrIndexCorrupt
 		}
 
@@ -716,17 +547,12 @@ func (r *Reader) MatchTags(headerGroup [][]byte) ([]Breadcrumbs, error) {
 		copy(headerChecks, headerGroup[1:])
 
 		if len(headerChecks) > 0 {
-			for _, childPos := range meta.Children {
-				if childPos == r.cursor {
+			for _, child := range meta.Parent.Children {
+				if child.Pos == r.cursor || child.ListIndex >= 0 {
 					continue
 				}
 
-				child, found := r.Index[childPos]
-				if !found || child.ListIndex >= 0 {
-					continue
-				}
-
-				childPos -= child.Header.Length()
+				childPos := child.Pos - child.Header.Length()
 
 				for i, matchTo := range headerChecks {
 					if len(r.data)-childPos < len(matchTo) {
@@ -743,76 +569,42 @@ func (r *Reader) MatchTags(headerGroup [][]byte) ([]Breadcrumbs, error) {
 		}
 
 		if len(headerChecks) == 0 {
-			res := r.Copy(r.cursor)
-			crumbs, err := res.Breadcrumbs()
-			if err != nil {
-				return nil, fmt.Errorf("nbt: error getting breadcrumbs?: %w", err)
-			}
-			results = append(results, crumbs)
+			results = append(results, r.Index[r.cursor])
 		}
 	}
 
 	return results, nil
 }
 
-type BasicTag struct {
-	Header TagHeader
-	Value  []byte
-}
-
-func (t *BasicTag) Bytes() []byte {
-	return append(t.Header.Bytes(), t.Value...)
-}
-
-func NewStringTag(name string, body string) *BasicTag {
-	value := make([]byte, 2+len(body))
-	value[0], value[1] = byte((len(body)>>8)&0xff), byte(len(body)&0xff)
-	copy(value[2:], []byte(body))
-
-	return &BasicTag{
-		Header: TagHeader{
-			TagID: TagString,
-			Name:  []byte(name),
-		},
-		Value: value,
+func (r *Reader) SimpleTagSize(tagID TagID) int {
+	switch tagID {
+	case TagEnd:
+		return 0
+	case TagByte:
+		return 1
+	case TagShort:
+		return 2
+	case TagInt, TagFloat:
+		return 4
+	case TagLong, TagDouble:
+		return 8
+	case TagByteArray:
+		size := int(r.readInt())
+		r.cursor -= 4
+		return size + 4
+	case TagString:
+		return 2 + (int(r.data[r.cursor])<<8 | int(r.data[r.cursor+1]))
+	case TagIntArray:
+		size := int(r.readInt())
+		r.cursor -= 4
+		return size*4 + 4
+	case TagLongArray:
+		size := int(r.readInt())
+		r.cursor -= 4
+		return size*8 + 4
+	default:
+		panic(fmt.Sprintf("unsupported tag ID: %v", tagID))
 	}
-}
-
-func NewIntTag(name string, num int) *BasicTag {
-	body := []byte{byte((num >> 24) & 0xff), byte((num >> 16) & 0xff),
-		byte((num >> 8) & 0xff), byte((num) & 0xff)}
-
-	return &BasicTag{
-		Header: TagHeader{
-			TagID: TagInt,
-			Name:  []byte(name),
-		},
-		Value: body,
-	}
-}
-
-func NewLongTag(name string, num int64) *BasicTag {
-	body := []byte{
-		byte((num >> 56) & 0xff), byte((num >> 48) & 0xff), byte((num >> 40) & 0xff), byte((num >> 32) & 0xff),
-		byte((num >> 24) & 0xff), byte((num >> 16) & 0xff), byte((num >> 8) & 0xff), byte((num) & 0xff),
-	}
-
-	return &BasicTag{
-		Header: TagHeader{
-			TagID: TagLong,
-			Name:  []byte(name),
-		},
-		Value: body,
-	}
-}
-
-func (t *TagHeader) Bytes() []byte {
-	result := make([]byte, 1+2+len(t.Name))
-	result[0], result[1], result[2] = byte(t.TagID),
-		byte((len(t.Name)>>8)&0xff), byte(len(t.Name)&0xff)
-	copy(result[3:], []byte(t.Name))
-
-	return result
 }
 
 // SkipTag skips the given tag ID assuming the header has already been read.
@@ -821,23 +613,9 @@ func (t *TagHeader) Bytes() []byte {
 // feature provided for high performance and fine control.
 func (r *Reader) SkipTag(tagID TagID) {
 	switch tagID {
-	case TagEnd:
-	case TagByte:
-		r.cursor++
-	case TagShort:
-		r.cursor += 2
-	case TagInt, TagFloat:
-		r.cursor += 4
-	case TagLong, TagDouble:
-		r.cursor += 8
-	case TagByteArray:
-		r.cursor += int(r.readInt())
-	case TagString:
-		r.cursor += 2 + (int(r.data[r.cursor])<<8 | int(r.data[r.cursor+1]))
-	case TagIntArray:
-		r.cursor += 4 * int(r.readInt())
-	case TagLongArray:
-		r.cursor += 8 * int(r.readInt())
+	case TagEnd, TagByte, TagShort, TagInt, TagFloat, TagLong, TagDouble, TagByteArray,
+		TagString, TagIntArray, TagLongArray:
+		r.cursor += r.SimpleTagSize(tagID)
 	case TagList:
 		elemTag, length, _ := r.ReadListTagHeader()
 		for i := 0; i < length; i++ {
@@ -862,51 +640,5 @@ func (r *Reader) ReadListTagHeader() (tagID TagID, length int, unreadLength int)
 	r.cursor++
 	length = int(r.readInt())
 	unreadLength = 5
-	return
-}
-
-func (r *Reader) SkipTagHeader() (int, error) {
-	if r.cursor >= len(r.data) {
-		return 0, io.EOF
-	}
-
-	if TagID(r.data[r.cursor]) == TagEnd {
-		r.cursor++
-		return 1, nil
-	}
-
-	unread := 3 + (int(r.data[r.cursor+1])<<8 | int(r.data[r.cursor+2]))
-	r.cursor += unread
-
-	return unread, nil
-}
-
-func (r *Reader) ReadTagHeader() (tagHeader TagHeader, unreadLength int,
-	err error) {
-	// defer func() {
-	// 	if r := recover(); r != nil {
-	// 		log.Println("anvil/nbt: warning: panic:", r)
-	// 		err = io.EOF
-	// 	}
-	// }()
-
-	if r.cursor >= len(r.data) {
-		err = io.EOF
-		return
-	}
-
-	tagHeader.TagID = TagID(r.data[r.cursor])
-	if tagHeader.TagID == TagEnd {
-		r.cursor++
-		unreadLength = 1
-		return
-	}
-
-	length := int(r.data[r.cursor+1])<<8 | int(r.data[r.cursor+2])
-	tagHeader.Name = r.data[r.cursor+3 : r.cursor+3+length]
-
-	unreadLength = 3 + length
-	r.cursor += unreadLength
-
 	return
 }

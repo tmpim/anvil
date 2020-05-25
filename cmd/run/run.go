@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,13 +20,13 @@ import (
 
 func main() {
 	minCoord := anvil.Coord{
-		X: -7268,
-		Z: -7496,
+		X: -7270,
+		Z: -7460,
 	}
 
 	maxCoord := anvil.Coord{
-		X: 7732,
-		Z: 7504,
+		X: 7740,
+		Z: 7550,
 	}
 
 	minRegion := minCoord.Region()
@@ -34,7 +36,25 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("specify the region folder pls")
+		return
 	}
+
+	targetComputerID := -1
+
+	targetComputer := (&nbt.TagHeader{
+		TagID: nbt.TagInt,
+		Name:  []byte("computerID"),
+	}).Bytes()
+
+	if len(os.Args) == 3 {
+		targetComputerID, _ = strconv.Atoi(os.Args[2])
+		if targetComputerID >= 0 {
+			log.Println("will be searching for computer ID", targetComputerID)
+			targetComputer = nbt.NewIntTag("computerID", targetComputerID).Bytes()
+		}
+	}
+
+	_ = targetComputer
 
 	start := time.Now()
 
@@ -59,10 +79,14 @@ func main() {
 	var totalBytes int64
 	var totalComp int32
 
-	out := make(chan anvil.ChunkData, 10)
+	out := make(chan anvil.ChunkData, 1000)
+
+	computerResults := make(chan FoundComputer, 100)
 
 	go func() {
 		defer close(out)
+
+		wg := new(sync.WaitGroup)
 
 		for _, file := range regionFiles {
 			rd, err := anvil.OpenRegionFile(file)
@@ -83,11 +107,40 @@ func main() {
 			count := atomic.LoadInt64(&totalBytes)
 			log.Println("processed:", file, "bytes:", count)
 		}
+
+		_ = wg
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for _, file := range regionFiles[len(regionFiles)/2:] {
+				rd, err := anvil.OpenRegionFile(file)
+				if err != nil {
+					log.Printf("failed to open %q: %v\n", file, err)
+					continue
+				}
+
+				if rd.Region.X > maxRegion.X || rd.Region.Z > maxRegion.Z ||
+					rd.Region.X < minRegion.X || rd.Region.Z < minRegion.Z {
+					continue
+				}
+
+				if err := rd.ReadAllChunks(out); err != nil {
+					log.Printf("failed to read %q: %v\n", file, err)
+				}
+
+				count := atomic.LoadInt64(&totalBytes)
+				log.Println("processed:", file, "bytes:", count)
+			}
+		}()
+
+		wg.Wait()
 	}()
 
 	wg := new(sync.WaitGroup)
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 12; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -100,7 +153,7 @@ func main() {
 
 				// s2 := time.Now()
 
-				nrd, err := chunk.NBTReader()
+				nrd, err := nbt.NewTileEntitiesReader(&chunk)
 				if err != nil {
 					continue
 					// panic(err)
@@ -108,57 +161,63 @@ func main() {
 
 				atomic.AddInt64(&totalBytes, int64(nrd.Len()))
 
-				ok, err := nrd.PossibleTagMatch([][][]byte{
-					{
-						// (&nbt.TagHeader{
-						// 	TagID: nbt.TagInt,
-						// 	Name:  []byte("computerID"),
-						// }).Bytes(),
-						nbt.NewIntTag("computerID", 0).Bytes(),
-					},
-				})
+				// ok, err := nrd.PossibleTagMatch([][][]byte{
+				// 	{
+				// 		targetComputer,
+				// 	},
+				// })
 
-				if !ok {
-					continue
-				}
+				// if !ok {
+				// 	continue
+				// }
 
-				nrd.PrepareIndex(nbt.SelectiveIndex{
-					nbt.TagHeader{
-						TagID: nbt.TagList,
-						Name:  []byte("TileEntities"),
-					},
-				})
+				nrd.ReadTagHeader()
+				start := nrd.Cursor()
+				nrd.SkipTag(nbt.TagList)
+				end := nrd.Cursor()
+				length := end - start
 
-				// fmt.Println("got match!")
-				results, err := nrd.MatchTags([][]byte{
-					// (&nbt.TagHeader{
-					// 	TagID: nbt.TagInt,
-					// 	Name:  []byte("computerID"),
-					// }).Bytes(),
-					nbt.NewIntTag("computerID", 0).Bytes(),
-				})
+				atomic.AddInt32(&totalComp, int32(length))
 
-				for _, result := range results {
-					fmt.Printf("got result, header: %+v, chunk coord: %+v\n", result[1].Header, chunk.Chunk.CornerCoord())
-					for _, child := range result[1].Children {
-						fmt.Println("key:", string(nrd.Index[child].Header.Name))
-					}
-					fmt.Println("breadcrumb:", result.String())
-				}
+				// s, _, _ := nrd.ReadTagHeader()
+				// log.Println(s.TagID, string(s.Name))
 
-				// len(results)
+				// err = nrd.FastPrepareIndex()
+				// if err != nil {
+				// 	log.Println("fast prepare index:", err)
+				// 	continue
+				// }
 
-				// _ = results
+				// ll := len(nrd.EncodeIndex())
+				// // log.Println("index size:", ll)
+				// atomic.AddInt32(&totalComp, int32(ll))
 			}
 		}()
 	}
 
+	compChan := make(chan struct{})
+
+	go func() {
+		defer close(compChan)
+		for result := range computerResults {
+			totalComp++
+			// data, err := json.MarshalIndent(result, "", "    ")
+			data, err := json.Marshal(result)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println(string(data))
+		}
+	}()
+
 	wg.Wait()
+	close(computerResults)
+	<-compChan
 
 	// var stats runtime.MemStats
 	// runtime.ReadMemStats(&stats)
 	// fmt.Printf("%+v\n", stats)
 
-	fmt.Println("took:", time.Since(start))
-	fmt.Println("found:", totalComp, "computers")
+	log.Println("took:", time.Since(start))
+	log.Println("found:", totalComp, "computers")
 }

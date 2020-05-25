@@ -13,7 +13,6 @@ import (
 
 	"github.com/klauspost/compress/zlib"
 	"github.com/minio/highwayhash"
-	"github.com/tmpim/anvil/nbt"
 )
 
 const (
@@ -44,15 +43,6 @@ func (c *ChunkData) Decompress() ([]byte, error) {
 	}
 	defer rd.Close()
 	return ioutil.ReadAll(rd)
-}
-
-func (c *ChunkData) NBTReader() (nbt.Reader, error) {
-	data, err := c.Decompress()
-	if err != nil {
-		return nbt.Reader{}, err
-	}
-
-	return nbt.NewReader(data), nil
 }
 
 func OpenRegionFile(filename string) (*RegionReader, error) {
@@ -100,6 +90,10 @@ func (r *RegionReader) readRawChunk(offset int) ([]byte, error) {
 	pos := (int(r.header[offset])<<16 | int(r.header[offset+1])<<8 |
 		int(r.header[offset+2])) << sectorShift
 
+	if pos == 0 {
+		return nil, nil
+	}
+
 	var chunkHeader [5]byte // force a stack allocation
 
 	if _, err := r.file.Seek(int64(pos), 0); err != nil {
@@ -136,12 +130,14 @@ func (r *RegionReader) ReadAllChunks(results chan<- ChunkData) error {
 			return err
 		}
 
-		c := ChunkData{
-			Chunk: region.OffsetToChunk(i),
-			Data:  data,
-		}
+		if data != nil {
+			c := ChunkData{
+				Chunk: region.OffsetToChunk(i),
+				Data:  data,
+			}
 
-		results <- c
+			results <- c
+		}
 	}
 
 	return nil

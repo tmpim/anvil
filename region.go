@@ -1,5 +1,7 @@
 package anvil
 
+import "math"
+
 type Coord struct {
 	X int
 	Y int
@@ -30,8 +32,8 @@ func (c *Coord) Chunk() Chunk {
 
 func (c *Coord) Region() Region {
 	return Region{
-		X: c.X >> 11,
-		Z: c.Z >> 11,
+		X: c.X >> 9,
+		Z: c.Z >> 9,
 	}
 }
 
@@ -55,6 +57,11 @@ func (r *Region) CornerChunk() Chunk {
 		X: r.X << 5,
 		Z: r.Z << 5,
 	}
+}
+
+func (c *Coord) Dist(other *Coord) float64 {
+	return math.Sqrt(float64((c.X-other.X)*(c.X-other.X) +
+		(c.Y-other.Y)*(c.Y-other.Y) + (c.Z-other.Z)*(c.Z-other.Z)))
 }
 
 // offset is from [0, 4092]
