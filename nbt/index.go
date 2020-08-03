@@ -9,36 +9,53 @@ import (
 	"io"
 
 	"github.com/tinylib/msgp/msgp"
+	"github.com/tmpim/anvil"
 )
-
-type FlatIndexEntry struct {
-	P int
-	A int
-	C []int
-	H *TagHeader
-	I int
-}
 
 type IndexWrapper []FlatIndexEntry
 
-type IndexEntry struct {
-	Pos       int
-	Parent    *IndexEntry
-	Children  []*IndexEntry
-	Header    TagHeader
-	ListIndex int
+type Slice uint64
+
+type Flags uint64
+
+const (
+	FlagIsTag = Flags(1 << iota)
+	FlagHasCoords
+	FlagHasCount
+)
+
+func (s Slice) Apply(data []byte) []byte {
+	pos := int(s & 0xffffffff)
+	length := int(s >> 32)
+	return data[pos : pos+length]
 }
 
-type SelectiveIndex []TagHeader
+func NewSlice(pos, length int) Slice {
+	return Slice(length<<32 | pos&0xffffffff)
+}
 
-func (s SelectiveIndex) Matches(header TagHeader) bool {
-	for _, selection := range s {
-		if header.TagID == selection.TagID && bytes.Equal(header.Name, selection.Name) {
-			return true
-		}
-	}
+type Origin struct {
+	Dimension string
+	Chunk     anvil.Chunk
+	Player    string
+}
 
-	return false
+type IndexEntry struct {
+	Name     Slice
+	Data     Slice
+	Parent   *IndexEntry
+	Children []*IndexEntry
+	Flags    Flags
+}
+
+func (f Flags) TagID() nbt.TagID {
+	return nbt.TagID(f >> (64 - 8))
+}
+
+func (f Flags) SetTagID(tagID nbt.TagID) Flags {
+	f |= FlagIsTag
+	f |= Flags(tagID) << (64 - 8)
+	return f
 }
 
 func toPos(e *IndexEntry) int {
@@ -127,7 +144,7 @@ func (r *Reader) FastPrepareIndex() (err error) {
 	return err
 }
 
-func (r *Reader) PrepareIndex(selectiveIndex SelectiveIndex) (err error) {
+func (r *Reader) PrepareIndex() (err error) {
 	if r.Index != nil {
 		return nil
 	}
@@ -153,12 +170,7 @@ func (r *Reader) PrepareIndex(selectiveIndex SelectiveIndex) (err error) {
 	}
 	r.Index[0] = root
 
-	index := false
-	if selectiveIndex == nil {
-		index = true
-	}
-
-	err = r.indexCompound(root, index, selectiveIndex)
+	err = r.indexCompound(root, index, false)
 	r.cursor = savedCursor
 	if err != nil {
 		return fmt.Errorf("nbt: error preparing index: %w", err)

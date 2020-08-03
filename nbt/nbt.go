@@ -25,8 +25,6 @@ var (
 type Reader struct {
 	data   []byte
 	cursor int
-	Index  map[int]*IndexEntry
-	// index []*IndexEntry
 }
 
 func NewGzipReader(rd io.Reader) (Reader, error) {
@@ -99,20 +97,20 @@ func (r *Reader) SeekTo(pos int) {
 // AlignToIndex seeks up until the cursor is aligned to a valid index entry.
 // Returns nil if there is no index, or if it hits the start of the chunk data
 // without finding any valid index entries.
-func (r *Reader) AlignToIndex() *IndexEntry {
-	if r.Index == nil {
-		return nil
-	}
+// func (r *Reader) AlignToIndex() *IndexEntry {
+// 	if r.Index == nil {
+// 		return nil
+// 	}
 
-	for i := r.cursor; i >= 0; i-- {
-		if ent, found := r.Index[i]; found {
-			r.SeekTo(i)
-			return ent
-		}
-	}
+// 	for i := r.cursor; i >= 0; i-- {
+// 		if ent, found := r.Index[i]; found {
+// 			r.SeekTo(i)
+// 			return ent
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // SeekToAndRead seeks to the given name and a tag ID matching the type of `value`
 // and reads it into `value`. SeekToAndRead will stop if it reaches the end of

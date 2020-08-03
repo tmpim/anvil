@@ -3,131 +3,130 @@ package nbt
 import (
 	"bytes"
 	"compress/zlib"
-	"encoding/json"
 	"io"
 
 	"github.com/ppacher/nbt"
 	"github.com/tmpim/anvil"
 )
 
-func (r *Reader) StructureToJSON(entry *IndexEntry) []byte {
-	results := map[string]interface{}{
-		string(entry.Header.Name): r.recursiveIface(entry),
-	}
+// func (r *Reader) StructureToJSON(entry *IndexEntry) []byte {
+// 	results := map[string]interface{}{
+// 		string(entry.Header.Name): r.recursiveIface(entry),
+// 	}
 
-	data, err := json.Marshal(results)
-	if err != nil {
-		panic(err)
-	}
+// 	data, err := json.Marshal(results)
+// 	if err != nil {
+// 		panic(err)
+// 	}
 
-	return data
-}
+// 	return data
+// }
 
-func (r *Reader) recursiveIface(entry *IndexEntry) interface{} {
-	switch entry.Header.TagID {
-	case TagList:
-		results := make([]interface{}, len(entry.Children))
-		for i, child := range entry.Children {
-			results[i] = r.recursiveIface(child)
-		}
-		return results
-	case TagCompound:
-		results := make(map[string]interface{})
-		for _, child := range entry.Children {
-			results[string(child.Header.Name)] = r.recursiveIface(child)
-		}
-		return results
-	default:
-		return entry.Header.TagID
-	}
-}
+// func (r *Reader) recursiveIface(entry *IndexEntry) interface{} {
+// 	switch entry.Header.TagID {
+// 	case TagList:
+// 		results := make([]interface{}, len(entry.Children))
+// 		for i, child := range entry.Children {
+// 			results[i] = r.recursiveIface(child)
+// 		}
+// 		return results
+// 	case TagCompound:
+// 		results := make(map[string]interface{})
+// 		for _, child := range entry.Children {
+// 			results[string(child.Header.Name)] = r.recursiveIface(child)
+// 		}
+// 		return results
+// 	default:
+// 		return entry.Header.TagID
+// 	}
+// }
 
-type TileEntityDetails struct {
-	Location  anvil.Coord
-	Container bool
-	Count     int
-}
+// type TileEntityDetails struct {
+// 	Location  anvil.Coord
+// 	Container bool
+// 	Count     int
+// }
 
-func (r *Reader) GetTileEntityDetails(ent *IndexEntry) *TileEntityDetails {
-	xStr := []byte("x")
-	yStr := []byte("y")
-	zStr := []byte("z")
-	countStr := []byte("Count")
+// func (r *Reader) GetTileEntityDetails(ent *IndexEntry) *TileEntityDetails {
+// 	xStr := []byte("x")
+// 	yStr := []byte("y")
+// 	zStr := []byte("z")
+// 	countStr := []byte("Count")
 
-	var foundCoord anvil.Coord
+// 	var foundCoord anvil.Coord
 
-	var count byte
-	foundLocation := false
-	cur := ent.Parent
+// 	var count byte
+// 	foundLocation := false
+// 	cur := ent.Parent
 
-	for cur != nil {
-		var x, y, z int
-		found := 0
+// 	for cur != nil {
+// 		var x, y, z int
+// 		found := 0
 
-		for _, child := range cur.Children {
-			name := child.Header.Name
-			if bytes.Equal(name, xStr) && !foundLocation {
-				r.SeekTo(child.Pos)
-				_, err := r.ReadImmediate(nbt.TagInt, &x)
-				if err != nil {
-					panic(err)
-				}
-				found++
-			} else if bytes.Equal(name, yStr) && !foundLocation {
-				r.SeekTo(child.Pos)
-				_, err := r.ReadImmediate(nbt.TagInt, &y)
-				if err != nil {
-					panic(err)
-				}
-				found++
-			} else if bytes.Equal(name, zStr) && !foundLocation {
-				r.SeekTo(child.Pos)
-				_, err := r.ReadImmediate(nbt.TagInt, &z)
-				if err != nil {
-					panic(err)
-				}
-				found++
-			} else if bytes.Equal(name, countStr) && count == 0 {
-				r.SeekTo(child.Pos)
-				_, err := r.ReadImmediate(nbt.TagByte, &count)
-				if err != nil {
-					panic(err)
-				}
-			}
-		}
+// 		for _, child := range cur.Children {
+// 			name := child.Header.Name
+// 			if bytes.Equal(name, xStr) && !foundLocation {
+// 				r.SeekTo(child.Pos)
+// 				_, err := r.ReadImmediate(nbt.TagInt, &x)
+// 				if err != nil {
+// 					panic(err)
+// 				}
+// 				found++
+// 			} else if bytes.Equal(name, yStr) && !foundLocation {
+// 				r.SeekTo(child.Pos)
+// 				_, err := r.ReadImmediate(nbt.TagInt, &y)
+// 				if err != nil {
+// 					panic(err)
+// 				}
+// 				found++
+// 			} else if bytes.Equal(name, zStr) && !foundLocation {
+// 				r.SeekTo(child.Pos)
+// 				_, err := r.ReadImmediate(nbt.TagInt, &z)
+// 				if err != nil {
+// 					panic(err)
+// 				}
+// 				found++
+// 			} else if bytes.Equal(name, countStr) && count == 0 {
+// 				r.SeekTo(child.Pos)
+// 				_, err := r.ReadImmediate(nbt.TagByte, &count)
+// 				if err != nil {
+// 					panic(err)
+// 				}
+// 			}
+// 		}
 
-		if found == 3 {
-			foundLocation = true
-			foundCoord = anvil.Coord{x, y, z}
+// 		if found == 3 {
+// 			foundLocation = true
+// 			foundCoord = anvil.Coord{x, y, z}
 
-			if cur == ent.Parent {
-				return &TileEntityDetails{
-					Location:  foundCoord,
-					Container: false,
-					Count:     1,
-				}
-			}
-		}
+// 			if cur == ent.Parent {
+// 				return &TileEntityDetails{
+// 					Location:  foundCoord,
+// 					Container: false,
+// 					Count:     1,
+// 				}
+// 			}
+// 		}
 
-		cur = cur.Parent
-	}
+// 		cur = cur.Parent
+// 	}
 
-	if foundLocation && count == 0 {
-		return &TileEntityDetails{
-			Location:  foundCoord,
-			Container: true,
-			Count:     1,
-		}
-	} else if foundLocation {
-		return &TileEntityDetails{
-			Location:  foundCoord,
-			Container: true,
-			Count:     int(count),
-		}
-	}
+// 	if foundLocation && count == 0 {
+// 		return &TileEntityDetails{
+// 			Location:  foundCoord,
+// 			Container: true,
+// 			Count:     1,
+// 		}
+// 	} else if foundLocation {
+// 		return &TileEntityDetails{
+// 			Location:  foundCoord,
+// 			Container: true,
+// 			Count:     int(count),
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func NewTileEntitiesReader(data *anvil.ChunkData) (Reader, error) {
 	rd, err := zlib.NewReader(bytes.NewReader(data.Data))
