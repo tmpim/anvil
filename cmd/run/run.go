@@ -167,12 +167,7 @@ func main() {
 					continue
 				}
 
-				if err := nrd.PrepareIndex(nbt.SelectiveIndex{
-					nbt.TagHeader{
-						TagID: nbt.TagList,
-						Name:  []byte("TileEntities"),
-					},
-				}); err != nil {
+				if err := nrd.FastPrepareIndex(); err != nil {
 					log.Println("error indexing:", err)
 					log.Printf("error was in chunk %d %d\n", chunk.Chunk.X, chunk.Chunk.Z)
 					// continue
