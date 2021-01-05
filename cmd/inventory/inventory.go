@@ -26,6 +26,11 @@ type PlayerComputer struct {
 	Player     string
 }
 
+type PlayerIntrospectionModule struct {
+	BoundName string
+	Player    string
+}
+
 // minX, maxX, minZ, maxZ: [-7268, 7732, -7496, 7504]
 
 func main() {
@@ -58,7 +63,7 @@ func main() {
 	var totalComp int32
 
 	out := make(chan PlayerFile, 10)
-	computerResults := make(chan PlayerComputer, 100)
+	computerResults := make(chan PlayerIntrospectionModule, 100)
 
 	go func() {
 		defer close(out)
@@ -102,8 +107,8 @@ func main() {
 						// 	Name:  []byte("TileEntities"),
 						// }).Bytes(),
 						(&nbt.TagHeader{
-							TagID: nbt.TagInt,
-							Name:  []byte("computerID"),
+							TagID: nbt.TagString,
+							Name:  []byte("bound_name"),
 						}).Bytes(),
 						// nbt.NewIntTag("computerID", 0).Bytes(),
 					},
@@ -121,8 +126,8 @@ func main() {
 				// fmt.Println("got match!")
 				results, err := nrd.MatchTags([][]byte{
 					(&nbt.TagHeader{
-						TagID: nbt.TagInt,
-						Name:  []byte("computerID"),
+						TagID: nbt.TagString,
+						Name:  []byte("bound_name"),
 					}).Bytes(),
 					// nbt.NewIntTag("computerID", 0).Bytes(),
 				})
@@ -132,13 +137,13 @@ func main() {
 				}
 
 				for _, result := range results {
-					var computerID int
+					var boundName string
 					nrd.SeekTo(result.Pos)
-					nrd.ReadImmediate(nbt.TagInt, &computerID)
+					nrd.ReadImmediate(nbt.TagString, &boundName)
 
-					computerResults <- PlayerComputer{
-						ComputerID: computerID,
-						Player:     playerfile.Player,
+					computerResults <- PlayerIntrospectionModule{
+						BoundName: boundName,
+						Player:    playerfile.Player,
 					}
 				}
 			}

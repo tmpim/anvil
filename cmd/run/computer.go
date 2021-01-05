@@ -9,6 +9,14 @@ import (
 
 type FoundComputer struct {
 	ID          int
+	Label       string
+	Coord       anvil.Coord
+	Container   bool
+	Approximate bool
+}
+
+type FoundIntrospectionModule struct {
+	BoundName   string
 	Coord       anvil.Coord
 	Container   bool
 	Approximate bool

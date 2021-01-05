@@ -1,6 +1,6 @@
 module github.com/tmpim/anvil
 
-go 1.14
+go 1.13
 
 require (
 	github.com/klauspost/compress v1.10.5

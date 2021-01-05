@@ -7,7 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
+
+	// "strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,20 +40,20 @@ func main() {
 		return
 	}
 
-	targetComputerID := -1
+	// targetComputerID := -1
 
 	targetComputer := (&nbt.TagHeader{
 		TagID: nbt.TagInt,
 		Name:  []byte("computerID"),
 	}).Bytes()
 
-	if len(os.Args) == 3 {
+	/*if len(os.Args) == 3 {
 		targetComputerID, _ = strconv.Atoi(os.Args[2])
 		if targetComputerID >= 0 {
 			log.Println("will be searching for computer ID", targetComputerID)
 			targetComputer = nbt.NewIntTag("computerID", targetComputerID).Bytes()
 		}
-	}
+	}*/
 
 	_ = targetComputer
 
@@ -161,36 +162,42 @@ func main() {
 
 				atomic.AddInt64(&totalBytes, int64(nrd.Len()))
 
-				// ok, err := nrd.PossibleTagMatch([][][]byte{
-				// 	{
-				// 		targetComputer,
-				// 	},
-				// })
+				ok, err := nrd.PossibleTagMatch([][][]byte{{targetComputer}})
+				if !ok {
+					continue
+				}
 
-				// if !ok {
-				// 	continue
-				// }
+				if err := nrd.FastPrepareIndex(); err != nil {
+					log.Println("error indexing:", err)
+					log.Printf("error was in chunk %d %d\n", chunk.Chunk.X, chunk.Chunk.Z)
+					// continue
+				}
 
-				nrd.ReadTagHeader()
-				start := nrd.Cursor()
-				nrd.SkipTag(nbt.TagList)
-				end := nrd.Cursor()
-				length := end - start
+				// fmt.Println("got match!")
+				results, err := nrd.MatchTags([][]byte{targetComputer})
+				if err != nil {
+					log.Println("error parsing:", err)
+					continue
+				}
 
-				atomic.AddInt32(&totalComp, int32(length))
+				for _, result := range results {
+					details := nrd.GetTileEntityDetails(result)
+					if details == nil {
+						log.Println("No tile entity details")
+						continue
+					}
 
-				// s, _, _ := nrd.ReadTagHeader()
-				// log.Println(s.TagID, string(s.Name))
+					var computerID int
+					nrd.SeekTo(result.Pos)
+					nrd.ReadImmediate(nbt.TagInt, &computerID)
 
-				// err = nrd.FastPrepareIndex()
-				// if err != nil {
-				// 	log.Println("fast prepare index:", err)
-				// 	continue
-				// }
-
-				// ll := len(nrd.EncodeIndex())
-				// // log.Println("index size:", ll)
-				// atomic.AddInt32(&totalComp, int32(ll))
+					computerResults <- FoundComputer{
+						ID:          computerID,
+						Coord:       details.Location,
+						Container:   details.Container,
+						Approximate: false,
+					}
+				}
 			}
 		}()
 	}
